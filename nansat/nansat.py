@@ -29,6 +29,13 @@ from numpy import nanmedian
 from numpy.lib.recfunctions import append_fields
 from netCDF4 import Dataset
 
+try:
+    from matplotlib import cm
+except ImportError:
+    MATPLOTLIB_IS_INSTALLED = False
+else:
+    MATPLOTLIB_IS_INSTALLED = True
+
 from nansat.domain import Domain
 from nansat.exporter import Exporter
 from nansat.figure import Figure
@@ -933,10 +940,18 @@ class Nansat(Domain, Exporter):
         bMin = float(minmax.split(' ')[0])
         bMax = float(minmax.split(' ')[1])
         # Make colormap from WKV information
-        cmap = np.vstack([np.arange(256.),
-                          np.arange(256.),
-                          np.arange(256.),
-                          np.ones(256)*255]).T
+        try:
+            colormap = band.GetMetadataItem('colormap')
+            cmap = cm.get_cmap(colormap, 256)
+            cmap = cmap(np.arange(256)) * 255
+        except:
+            if not MATPLOTLIB_IS_INSTALLED:
+                self.logger.debug('Geotiff is only available in gray '
+                                  'since matplotlib is not installed.')
+            cmap = np.vstack([np.arange(256.),
+                              np.arange(256.),
+                              np.arange(256.),
+                              np.ones(256)*255]).T
         colorTable = gdal.ColorTable()
         for i in range(cmap.shape[0]):
             colorEntry = (int(cmap[i, 0]), int(cmap[i, 1]),

@@ -47,7 +47,7 @@ AUTHOR_EMAIL        = "nansat-dev@googlegroups.com"
 PLATFORMS           = ["Linux", "OS X", "Windows"]
 MAJOR               = 1
 MINOR               = 2
-MICRO               = 0
+MICRO               = 1
 ISRELEASED          = True
 VERSION             = '%d.%d.%d' % (MAJOR, MINOR, MICRO) # Remember to remove "dev" when releasing
 REQS                = [
@@ -55,7 +55,8 @@ REQS                = [
                         "pythesint",
                         "urllib3",
                         "numpy",
-                        "gdal"
+                        "gdal",
+                        "python-dateutil",
                     ]
 
 #----------------------------------------------------------------------------#
