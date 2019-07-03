@@ -80,7 +80,9 @@ class Opendap(VRT):
             try:
                 ds = Dataset(self.filename)
             except:
-                raise ValueError('Cannot open %s' % self.filename)
+                ds = Dataset(self.filename+'#fillmismatch')
+            else:
+                raise
         elif type(ds) != Dataset:
             raise ValueError('Input ds is not netCDF.Dataset!')
 
@@ -244,10 +246,11 @@ class Opendap(VRT):
         ds_times = self.convert_dstime_datetimes(ds_time)
         layer_time_id, layer_date = Opendap.get_layer_datetime(date, ds_times)
 
-        if bands is None:
-            var_names = self.get_geospatial_variable_names()
-        else:
-            var_names = bands
+        var_names = self.get_geospatial_variable_names()
+        if bands:
+            # TODO: select variable names based on standard names instead of band names
+            #       - this means the variable must be looped, like in mapper_netcdf_cf.py
+            var_names = bands 
 
         # create VRT with correct lon/lat (geotransform)
         raster_x, raster_y = self.get_shape()
@@ -257,6 +260,10 @@ class Opendap(VRT):
         meta_dict = self.create_metadict(filename, var_names, layer_time_id)
 
         self.create_bands(meta_dict)
+
+        # Copy metadata
+        for attr in self.ds.ncattrs():
+            self.dataset.SetMetadataItem(str(attr), str(self.ds.getncattr(attr)))
 
         # set time
         time_res_sec = self.get_time_coverage_resolution()
@@ -288,7 +295,12 @@ class Opendap(VRT):
         meta_dict = []
         for var_name in var_names:
             # Get a list of variable dimensions
-            var_dimensions = list(self.ds.variables[var_name].dimensions)
+            try:
+                var_dimensions = list(self.ds.variables[var_name].dimensions)
+            except KeyError:
+                # variable does not exist, simply skip..
+                warnings.warn('Band %s does not exist - skipping...' %var_name)
+                continue
             # Get variable specific dimensions
             spec_dimensions = list(filter(self._filter_dimensions, var_dimensions))
             # Replace <time> dimension by index of requested time slice

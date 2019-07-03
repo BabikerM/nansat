@@ -13,11 +13,19 @@ import numpy as np
 from netCDF4 import Dataset
 import gdal
 
+try:
+    import scipy
+except:
+    IMPORT_SCIPY = False
+else:
+    IMPORT_SCIPY = True
+
 import pythesint as pti
 
 from nansat.mappers.opendap import Opendap
 from nansat.vrt import VRT
 from nansat.nsr import NSR
+from nansat.tools import initial_bearing
 
 
 class Mapper(Opendap):
@@ -37,18 +45,112 @@ class Mapper(Opendap):
                  ds=None, bands=None, cachedir=None, *args, **kwargs):
 
         self.test_mapper(filename)
+
+        if not IMPORT_SCIPY:
+            raise NansatReadError('Sentinel-1 data cannot be read because scipy is not installed')
+
         timestamp = date if date else self.get_date(filename)
 
         self.create_vrt(filename, gdal_dataset, gdal_metadata, timestamp, ds, bands, cachedir)
+
+        layer_time_id, layer_date = Opendap.get_layer_datetime(None,
+                self.convert_dstime_datetimes(self.get_dataset_time()))
+        polarizations = [self.ds.polarisation[i:i+2] for i in range(0,len(self.ds.polarisation),2)]
+        for pol in polarizations:
+            dims = list(self.ds.variables['dn_%s' %pol].dimensions)
+            dims[dims.index(self.timeVarName)] = layer_time_id
+            src = [
+                    self.get_metaitem(filename, 'Amplitude_%s' %pol, dims)['src'],
+                    self.get_metaitem(filename, 'sigmaNought_%s' %pol, dims)['src']
+                ]
+            dst = {
+                    'wkv': 'surface_backwards_scattering_coefficient_of_radar_wave',
+                    'PixelFunctionType': 'Sentinel1Calibration',
+                    'polarization': pol,
+                    'suffix': pol,
+                }
+            self.create_band(src, dst)
+            self.dataset.FlushCache()
+
+        # Get GCP variables
+        pixel = self.ds['GCP_pixel_%s' %polarizations[0]][:].data
+        line = self.ds['GCP_line_%s' %polarizations[0]][:].data
+        lon = self.ds['GCP_longitude_%s' %polarizations[0]][:].data
+        lat = self.ds['GCP_latitude_%s' %polarizations[0]][:].data
+        inci = self.ds['GCP_incidenceAngle_%s' %polarizations[0]][:].data
+        lon = lon.reshape(np.unique(line[:].data).shape[0],
+                np.unique(pixel[:].data).shape[0])
+        lat = lat.reshape(np.unique(line[:].data).shape[0],
+                np.unique(pixel[:].data).shape[0])
+        inci = inci.reshape(np.unique(line[:].data).shape[0],
+                np.unique(pixel[:].data).shape[0])
+
+        # Add incidence angle band
+        inciVRT = VRT.from_array(inci)
+        inciVRT = inciVRT.get_resized_vrt(self.dataset.RasterXSize, self.dataset.RasterYSize, 1)
+        self.band_vrts['inciVRT'] = inciVRT
+        src = {'SourceFilename': self.band_vrts['inciVRT'].filename,
+               'SourceBand': 1}
+        dst = {'wkv': 'angle_of_incidence',
+               'name': 'incidence_angle'}
+        self.create_band(src, dst)
+        self.dataset.FlushCache()
+
+        """
+        TODO: Repetition from mapper_sentinel1_l1.py... Consider generalising
+        """
+        # Add look direction band
+        sat_heading = initial_bearing(lon[:-1, :], lat[:-1, :], lon[1:, :], lat[1:, :])
+        look_direction = scipy.ndimage.interpolation.zoom( np.mod(sat_heading + 90, 360),
+                (np.shape(lon)[0] / (np.shape(lon)[0]-1.), 1))
+
+        # Decompose, to avoid interpolation errors around 0 <-> 360
+        look_direction_u = np.sin(np.deg2rad(look_direction))
+        look_direction_v = np.cos(np.deg2rad(look_direction))
+        look_u_VRT = VRT.from_array(look_direction_u)
+        look_v_VRT = VRT.from_array(look_direction_v)
+        lookVRT = VRT.from_lonlat(lon, lat)
+        lookVRT.create_band([{'SourceFilename': look_u_VRT.filename,
+                               'SourceBand': 1},
+                              {'SourceFilename': look_v_VRT.filename,
+                               'SourceBand': 1}],
+                             {'PixelFunctionType': 'UVToDirectionTo'}
+                             )
+
+        # Blow up to full size
+        lookVRT = lookVRT.get_resized_vrt(self.dataset.RasterXSize, self.dataset.RasterYSize, 1)
+
+        # Store VRTs so that they are accessible later
+        self.band_vrts['look_u_VRT'] = look_u_VRT
+        self.band_vrts['look_v_VRT'] = look_v_VRT
+        self.band_vrts['lookVRT'] = lookVRT
+
+        src = {
+                'SourceFilename': self.band_vrts['lookVRT'].filename,
+                'SourceBand': 1
+            }
+        dst = {
+                'wkv': 'sensor_azimuth_angle',
+                'name': 'look_direction'
+            }
+        self.create_band(src, dst)
+        self.dataset.FlushCache()
+        """ End repetition """
 
         self._remove_geotransform()
         self._remove_geolocation()
         self.dataset.SetProjection('')
         self.dataset.SetGCPs(self.get_gcps(), NSR().wkt)
 
-        self.dataset.SetMetadataItem('entry_title', filename)
-        self.dataset.SetMetadataItem('data_center', json.dumps(pti.get_gcmd_provider('NO/MET')))
-        self.dataset.SetMetadataItem('ISO_topic_category',
+        mditem = 'entry_title'
+        if not self.dataset.GetMetadataItem(mditem):
+            self.dataset.SetMetadataItem(mditem, filename)
+        mditem = 'data_center'
+        if not self.dataset.GetMetadataItem(mditem):
+            self.dataset.SetMetadataItem(mditem, json.dumps(pti.get_gcmd_provider('NO/MET')))
+        mditem = 'ISO_topic_category'
+        if not self.dataset.GetMetadataItem(mditem):
+            self.dataset.SetMetadataItem(mditem,
                 pti.get_iso19115_topic_category('Imagery/Base Maps/Earth Cover')['iso_topic_category'])
 
         mm = pti.get_gcmd_instrument('sar')
@@ -58,6 +160,12 @@ class Mapper(Opendap):
             ee = pti.get_gcmd_platform('sentinel-1b')
         self.dataset.SetMetadataItem('instrument', json.dumps(mm))
         self.dataset.SetMetadataItem('platform', json.dumps(ee))
+
+        # Times in opendap.py are wrong for S1...
+        self.dataset.SetMetadataItem('time_coverage_start',
+                self.dataset.GetMetadataItem('ACQUISITION_START_TIME'))
+        self.dataset.SetMetadataItem('time_coverage_end', 
+                self.dataset.GetMetadataItem('ACQUISITION_STOP_TIME'))
 
     @staticmethod
     def get_date(filename):
