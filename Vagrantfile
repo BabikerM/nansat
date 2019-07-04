@@ -13,14 +13,15 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   end
 
   config.vm.provider "virtualbox" do |v|
-    v.memory = 2000
-    v.cpus = 1
+    v.memory = 5000
+    v.cpus = 3
   end
 
   # If true, then any SSH connections made will enable agent forwarding.
   #config.ssh.forward_agent = true
   #config.ssh.forward_x11 = true
-
+  config.vm.network "forwarded_port", guest: 8888, host: 8888
+  
   config.vm.provision "ansible_local" do |ansible|
     ansible.playbook = "provisioning/site.yml"
     ansible.galaxy_role_file = 'provisioning/galaxy_requirements.yml'
