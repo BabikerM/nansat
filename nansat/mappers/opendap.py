@@ -81,7 +81,6 @@ class Opendap(VRT):
                 ds = Dataset(self.filename)
             except:
                 ds = Dataset(self.filename+'#fillmismatch')
-
         elif type(ds) != Dataset:
             raise ValueError('Input ds is not netCDF.Dataset!')
 
